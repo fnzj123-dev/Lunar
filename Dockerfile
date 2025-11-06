@@ -1,14 +1,15 @@
-# Apache 포함된 PHP 8.2 이미지
+# 아주 단순한 Apache+PHP 컨테이너
 FROM php:8.2-apache
 
-# 작업 디렉토리
-WORKDIR /var/www/html
+# Render가 임의 포트를 주입하므로 Apache가 그 포트를 듣게 수정
+ENV PORT=10000
+RUN sed -ri 's/^Listen 80/Listen ${PORT}/' /etc/apache2/ports.conf && \
+    sed -ri 's/:80>/:${PORT}>/' /etc/apache2/sites-available/000-default.conf
 
-# 소스 복사 (포크 레포 전체)
+WORKDIR /var/www/html
 COPY . /var/www/html
 
-# mbstring 등 필요한 확장 (라이브러리에서 멀티바이트 문자열 사용 가능성 대비)
-RUN docker-php-ext-install mbstring
+# mbstring 설치는 일단 생략 (필요 없으면 이게 제일 안정적)
+# RUN docker-php-ext-install mbstring
 
-# Apache가 80 포트로 구동됨
-EXPOSE 80
+EXPOSE 10000
