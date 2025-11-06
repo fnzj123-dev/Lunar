@@ -1,10 +1,10 @@
 <?php
-// index.php - Lunar API (Render용, \oops\Lunar 우선)
+// index.php - Lunar API 최종 안정 버전
 declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 
 // -------------------------------------------------------------
-// include_path 설정 (레거시 상대경로 include 대응)
+// include_path 설정 (레거시 include 대응)
 // -------------------------------------------------------------
 set_include_path(
   get_include_path()
@@ -12,59 +12,39 @@ set_include_path(
   . PATH_SEPARATOR . __DIR__ . '/Lunar'
 );
 
-// set_error_handler에서 요구하는 스텁 (레거시 호환)
+// -------------------------------------------------------------
+// myException 스텁 (레거시용)
+// -------------------------------------------------------------
 if (!class_exists('myException')) {
   class myException extends Exception {
     public static function myErrorHandler($errno, $errstr, $errfile, $errline) {
-      return false; // PHP 기본 핸들러에 넘김
+      return false;
     }
   }
 }
 
+// -------------------------------------------------------------
 // 라이브러리 로드
+// -------------------------------------------------------------
 require_once __DIR__ . '/Lunar.php';
 
 // -------------------------------------------------------------
-// 클래스 선택: \oops\Lunar -> \oops\Lunar_API -> Lunar 순
+// 클래스 선택 (\oops\Lunar 고정)
 // -------------------------------------------------------------
-$lunar = null;
-$usedClass = null;
-if (class_exists('\\oops\\Lunar')) {
-  $lunar = new \oops\Lunar();       // ✅ 실제 계산 클래스
-  $usedClass = '\\oops\\Lunar';
-} elseif (class_exists('\\oops\\Lunar_API')) {
-  $lunar = new \oops\Lunar_API();   // 보조
-  $usedClass = '\\oops\\Lunar_API';
-} elseif (class_exists('Lunar')) {
-  $lunar = new Lunar();             // 혹시 전역
-  $usedClass = 'Lunar';
-} else {
+use oops\Lunar as LunarClass;
+
+if (!class_exists('\\oops\\Lunar')) {
   http_response_code(500);
-  echo json_encode([
-    'ok'=>false,
-    'error'=>'Lunar class not found',
-    'declared_classes'=>array_values(array_filter(get_declared_classes(), fn($c)=> stripos($c,'lunar')!==false || stripos($c,'oops')!==false)),
-  ], JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT);
+  echo json_encode(['ok'=>false, 'error'=>'Class \\oops\\Lunar not found'], JSON_UNESCAPED_UNICODE);
   exit;
 }
 
-// -------------------------------------------------------------
-// 디버그: ?debug=1 붙이면 사용 클래스/메서드목록 출력
-// -------------------------------------------------------------
-$in = json_decode(file_get_contents('php://input'), true) ?: $_GET;
-if (isset($in['debug'])) {
-  echo json_encode([
-    'ok'=>true,
-    'mode'=>'debug',
-    'used_class'=>$usedClass,
-    'methods'=>get_class_methods($lunar),
-  ], JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT);
-  exit;
-}
+$lunar = new \oops\Lunar();
 
 // -------------------------------------------------------------
 // 입력 파라미터
 // -------------------------------------------------------------
+$in = json_decode(file_get_contents('php://input'), true) ?: $_GET;
 $y  = isset($in['year'])   ? intval($in['year'])  : null;
 $m  = isset($in['month'])  ? intval($in['month']) : null;
 $d  = isset($in['day'])    ? intval($in['day'])   : null;
@@ -73,56 +53,47 @@ $mi = isset($in['minute']) ? intval($in['minute']): 0;
 
 if (!$y || !$m || !$d) {
   http_response_code(400);
-  echo json_encode(['ok'=>false,'error'=>'year/month/day는 필수입니다. 예: {"year":1992,"month":3,"day":14,"hour":15,"minute":30}'], JSON_UNESCAPED_UNICODE);
+  echo json_encode(['ok'=>false, 'error'=>'year/month/day는 필수입니다.'], JSON_UNESCAPED_UNICODE);
   exit;
 }
 
 // -------------------------------------------------------------
-// 유연 호출 헬퍼
+// 실제 계산 수행
 // -------------------------------------------------------------
-function callIf($obj, array $cands, ...$args) {
-  foreach ($cands as $fn) {
-    if (method_exists($obj, $fn)) {
-      try { return $obj->$fn(...$args); } catch (Throwable $e) { /* pass */ }
-    }
-  }
-  return null;
+
+// 1) 양력 → 음력 변환
+$lunarInfo = null;
+if (method_exists($lunar, 'tolunar')) {
+  $lunarInfo = $lunar->tolunar($y, $m, $d, $hh, $mi);
+}
+
+// 2) 절기 정보
+$terms = null;
+if (method_exists($lunar, 'seasondate')) {
+  $terms = $lunar->seasondate($y, $m, $d);
+}
+
+// 3) 간지 (필요하면 dayfortune / ganji_ref 등 이용 가능)
+$ganji = null;
+if (method_exists($lunar, 'dayfortune')) {
+  $ganji = $lunar->dayfortune($y, $m, $d);
+}
+
+// 4) 줄리안일 (cal2jd 사용)
+$jd = null;
+if (method_exists($lunar, 'cal2jd')) {
+  $jd = $lunar->cal2jd($y, $m, $d, $hh, $mi);
 }
 
 // -------------------------------------------------------------
-// 후보 메서드(광범위): \oops\Lunar 쪽에 맞춰 가능한 이름들 시도
-// -------------------------------------------------------------
-// 음력/윤달 변환
-$lunarInfo = callIf($lunar, [
-  'solar_to_lunar','solar2lunar','solarToLunar','toLunar',
-  'getLunar','getLunarDate','s2l','solar_to_Lunar'
-], $y,$m,$d,$hh,$mi);
-
-// 간지(연/월/일/시)
-$ganji = callIf($lunar, [
-  'ganji','sexagenary','getGanji','get_ganji',
-  'getSexagenary','date2ganji','calcGanji'
-], $y,$m,$d,$hh,$mi);
-
-// 절기/중기
-$terms = callIf($lunar, [
-  'getTerm','terms','nearest_term','seasondate','getSeasonDate'
-], $y,$m,$d,$hh,$mi);
-
-// 줄리안일
-$jd = callIf($lunar, [
-  'jd','getJD','julian','getJulianDay'
-], $y,$m,$d,$hh,$mi);
-
-// -------------------------------------------------------------
-// 응답
+// 응답 출력
 // -------------------------------------------------------------
 echo json_encode([
   'ok'        => true,
-  'usedClass' => $usedClass,
+  'class'     => '\\oops\\Lunar',
   'input'     => ['year'=>$y,'month'=>$m,'day'=>$d,'hour'=>$hh,'minute'=>$mi],
   'lunar'     => $lunarInfo,
   'ganji'     => $ganji,
   'terms'     => $terms,
-  'julianDay' => $jd,
+  'julianDay' => $jd
 ], JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT);
